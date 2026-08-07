@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef } from "react";
+import { Analytics } from "@vercel/analytics/react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const INSTAGRAM_URL = "https://www.instagram.com/shift_society26?igsh=cWxyOXNkbTB5c2hs";
 
@@ -1280,6 +1283,8 @@ export default function ShiftSocietyLanding() {
           © 2026 Shift Society. All rights reserved. Stellenbosch, South Africa.
         </div>
       </footer>
+      <Analytics />
+      <SpeedInsights />
     </div>
   );
 }
