@@ -958,6 +958,18 @@ Error generating stack: `+o.message+`
   }
   .ff-copy { padding: 14px 26px; white-space: nowrap; }
 
+  /* referral field injected into the site's own booking form.
+     Deliberately reuses the site's .form-field / .form-label / .form-input
+     classes so it inherits existing styling; only the extras are .ff-*. */
+  .ff-ref-note {
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; line-height: 1.5;
+    color: var(--gold, #C9A84C);
+    margin-top: 2px;
+  }
+  .ff-ref-note[hidden] { display: none; }
+  .ff-ref-input { text-transform: uppercase; letter-spacing: 1px; }
+
   @media (max-width: 640px) {
     .ff-inner { padding: 80px 18px 100px; }
     .ff-amount { font-size: 34px; }
@@ -1109,6 +1121,24 @@ Error generating stack: `+o.message+`
     } catch (e) { return null; }
   }
 
+  function setReferral(code) {
+    var clean = String(code || "").trim().toUpperCase().slice(0, 32);
+    try {
+      if (!clean) { localStorage.removeItem(REF_KEY); return; }
+      if (!/^[A-Z0-9-]{3,32}$/.test(clean)) return;
+      localStorage.setItem(REF_KEY, JSON.stringify({
+        code: clean, exp: Date.now() + REF_TTL_DAYS * 864e5
+      }));
+    } catch (e) {}
+  }
+
+  /* Was a code present in the URL on THIS page load? If so we deep-link the
+     visitor straight to the booking form once React has painted it. */
+  var arrivedViaLink = false;
+  try {
+    arrivedViaLink = !!new URLSearchParams(window.location.search).get("ref");
+  } catch (e) {}
+
   captureReferral();
 
   /* strip ?ref= from the address bar without a reload */
@@ -1120,9 +1150,8 @@ Error generating stack: `+o.message+`
     }
   } catch (e) {}
 
-  /* The referral code is deliberately NOT rendered anywhere on the page.
-     It is held in localStorage and only ever leaves via the email payload,
-     so no visitor sees who referred whom. */
+  /* Only the CODE is ever shown — never the referrer's name. The name lives
+     in our inbox, not on the page. */
 
   /* ---------- referral code generation ----------
      Deterministic: the same name + email always produces the same code, so a
@@ -1215,10 +1244,190 @@ Error generating stack: `+o.message+`
     row.appendChild(btn);
   }
 
-  injectHeroButton();
-  new MutationObserver(injectHeroButton)
+  /* ---------- inject a referral field into the site's booking form ----------
+     Appended as the last .form-field before the Send button. It reuses the
+     site's own form-field / form-label / form-input classes, so it inherits
+     the existing 20px flex gap and styling with no CSS overrides. React does
+     not own this node; its value is read at submit time by the fetch wrapper
+     below, so the React component is never modified. ---------------------- */
+  var SOURCE_PERSON = "Referred by someone";
+  var SOURCES = [
+    "Instagram",
+    "TikTok",
+    "Facebook",
+    "YouTube",
+    "Google search",
+    "Car meet or show",
+    SOURCE_PERSON,
+    "Other"
+  ];
+
+  function injectBookingField() {
+    var form = document.querySelector(".booking-form");
+    if (!form || form.querySelector("#ff-booking-source")) return;
+
+    /* --- field 1: how did you hear about us (dropdown) --- */
+    var srcField = document.createElement("div");
+    srcField.className = "form-field";
+    srcField.id = "ff-booking-srcfield";
+
+    var srcLabel = document.createElement("label");
+    srcLabel.className = "form-label";
+    srcLabel.setAttribute("for", "ff-booking-source");
+    srcLabel.textContent = "How Did You Hear About Us?";
+
+    var select = document.createElement("select");
+    select.className = "form-select";
+    select.id = "ff-booking-source";
+
+    var blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Select an option";
+    select.appendChild(blank);
+    SOURCES.forEach(function (s) {
+      var o = document.createElement("option");
+      o.value = s;
+      o.textContent = s;
+      select.appendChild(o);
+    });
+
+    srcField.appendChild(srcLabel);
+    srcField.appendChild(select);
+
+    /* --- field 2: only appears once "Referred by someone" is chosen --- */
+    var refField = document.createElement("div");
+    refField.className = "form-field";
+    refField.id = "ff-booking-reffield";
+    refField.hidden = true;
+
+    var refLabel = document.createElement("label");
+    refLabel.className = "form-label";
+    refLabel.setAttribute("for", "ff-booking-ref");
+    refLabel.textContent = "Their Name or Referral Code";
+
+    var input = document.createElement("input");
+    input.className = "form-input ff-ref-input";
+    input.id = "ff-booking-ref";
+    input.type = "text";
+    input.placeholder = "e.g. Phillip du Toit  —  or  PHIL-TJG2";
+    input.autocomplete = "off";
+    input.maxLength = 60;
+
+    var note = document.createElement("div");
+    note.className = "ff-ref-note";
+    note.id = "ff-booking-note";
+    note.hidden = true;
+
+    refField.appendChild(refLabel);
+    refField.appendChild(input);
+    refField.appendChild(note);
+
+    function showRefField(show) {
+      refField.hidden = !show;
+      if (show) input.focus({ preventScroll: true });
+    }
+
+    select.addEventListener("change", function () {
+      showRefField(this.value === SOURCE_PERSON);
+      if (this.value !== SOURCE_PERSON) { input.value = ""; note.hidden = true; }
+    });
+
+    /* A code is uppercased as it's typed; a person's name is left alone. */
+    input.addEventListener("input", function () {
+      if (looksLikeCode(this.value)) {
+        var v = this.value.toUpperCase();
+        if (this.value !== v) this.value = v;
+        setReferral(v);
+      }
+      note.hidden = true;
+    });
+
+    /* arriving on a referral link pre-answers both fields */
+    var existing = getReferral();
+    if (existing) {
+      select.value = SOURCE_PERSON;
+      input.value = existing;
+      refField.hidden = false;
+      note.textContent = arrivedViaLink
+        ? "Referral applied — " + existing + " gets credited if you book."
+        : "Saved from an earlier visit. Change or clear it if it doesn't apply.";
+      note.hidden = false;
+    }
+
+    var btn = form.querySelector("button");
+    if (btn) {
+      form.insertBefore(srcField, btn);
+      form.insertBefore(refField, btn);
+    } else {
+      form.appendChild(srcField);
+      form.appendChild(refField);
+    }
+  }
+
+  /* CODE-SHAPED means our generated format: FOUR-WXYZ. Anything else is
+     treated as a free-text name and passed through as-is. */
+  function looksLikeCode(v) {
+    return /^[A-Za-z]{2,6}-?[A-Za-z0-9]{0,6}$/.test(String(v || "").trim())
+        && /[-0-9]/.test(String(v || ""));
+  }
+
+  /* ---------- deep-link: ?ref=CODE lands straight on the booking form ----- */
+  var deepLinkTries = 0, deepLinkFirstAt = 0, userTookOver = false;
+
+  /* if the visitor starts scrolling themselves, stop fighting them */
+  ["wheel", "touchstart", "keydown"].forEach(function (ev) {
+    window.addEventListener(ev, function () { userTookOver = true; },
+                            { passive: true, once: true });
+  });
+
+  /* Jump, not glide. The site sets html{scroll-behavior:smooth}, so a plain
+     scrollIntoView animates ~3500px — and React's late re-renders cancel it
+     mid-flight, dumping the visitor back at the hero. Suppress it for this
+     one call, then restore whatever was there. */
+  function jumpTo(el) {
+    var de = document.documentElement, prev = de.style.scrollBehavior;
+    de.style.scrollBehavior = "auto";
+    window.scrollTo(0, el.getBoundingClientRect().top + window.pageYOffset);
+    de.style.scrollBehavior = prev;
+  }
+
+  function deepLinkToBooking() {
+    if (!arrivedViaLink) return;
+    if (userTookOver) { arrivedViaLink = false; return; }
+    var target = document.getElementById("booking");
+    var field  = document.getElementById("ff-booking-ref");
+    if (!target || !field) {
+      /* React hasn't painted yet — retry for up to ~8s, then give up quietly */
+      if (++deepLinkTries > 80) arrivedViaLink = false;
+      return;
+    }
+    jumpTo(target);
+    /* Re-assert briefly: images and fonts finish loading after this point and
+       push everything above the booking section further down. */
+    if (!deepLinkFirstAt) deepLinkFirstAt = Date.now();
+    if (Date.now() - deepLinkFirstAt > 1500) arrivedViaLink = false;
+  }
+
+  function syncInjections() {
+    injectHeroButton();
+    injectBookingField();
+    deepLinkToBooking();
+  }
+
+  syncInjections();
+  new MutationObserver(syncInjections)
     .observe(document.getElementById("root") || document.body,
              { childList: true, subtree: true });
+
+  /* the observer only fires on DOM change; poll briefly in case React
+     finished painting before this script ran */
+  var settleTimer = setInterval(function () {
+    syncInjections();
+    if (document.getElementById("ff-booking-ref") && !arrivedViaLink) {
+      clearInterval(settleTimer);
+    }
+  }, 100);
+  setTimeout(function () { clearInterval(settleTimer); }, 8000);
 
   /* ---------- attach referral to the existing booking submission ----------
      Wraps fetch instead of touching the React code. Only mutates requests
@@ -1228,12 +1437,36 @@ Error generating stack: `+o.message+`
     try {
       var url = typeof input === "string" ? input : (input && input.url) || "";
       if (url.indexOf("api.web3forms.com") !== -1 && init && typeof init.body === "string") {
-        var code = getReferral();
-        if (code) {
-          var payload = JSON.parse(init.body);
-          payload.referral_code = code;
-          init = Object.assign({}, init, { body: JSON.stringify(payload) });
+        /* what the visitor actually selected wins over stored state, so
+           changing or clearing the fields genuinely changes the attribution */
+        var srcEl = document.getElementById("ff-booking-source");
+        var refEl = document.getElementById("ff-booking-ref");
+        var source = srcEl ? srcEl.value : "";
+        var raw    = refEl && !document.getElementById("ff-booking-reffield").hidden
+                       ? refEl.value.trim() : "";
+
+        var payload = JSON.parse(init.body);
+        var changed = false;
+
+        if (source) { payload.heard_about = source; changed = true; }
+
+        if (raw) {
+          changed = true;
+          if (looksLikeCode(raw)) {
+            payload.referral_code = raw.toUpperCase();
+            payload.subject = (payload.subject || "Booking Inquiry")
+                            + " [ref " + raw.toUpperCase() + "]";
+          } else {
+            payload.referred_by = raw;
+            payload.referral_code = "name given, no code";
+            payload.subject = (payload.subject || "Booking Inquiry")
+                            + " [ref: " + raw + "]";
+          }
+        } else if (source && source !== SOURCE_PERSON) {
+          payload.referral_code = "none";
         }
+
+        if (changed) init = Object.assign({}, init, { body: JSON.stringify(payload) });
       }
     } catch (e) {}
     return _fetch.call(this, input, init);
@@ -1334,6 +1567,7 @@ Error generating stack: `+o.message+`
   };
 })();
 </script>
+
 
   </body>
 </html>
